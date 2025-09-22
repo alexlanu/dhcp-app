@@ -1,0 +1,32 @@
+services:
+  dhcp-agent:
+    image: dhcp-app
+    container_name: dhcp-agent
+
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./dhcp.out:/app/dhcp.out:rw
+
+    network_mode: "host"
+
+    command: "/entrypoint.sh"
+
+    privileged: true
+    pid: "host"
+
+    tmpfs: /tmp
+    deploy:
+      resources:
+        limits:
+          cpus: '0.2'
+          memory: 128M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
+
+    stop_grace_period: 5s
+    restart: "${RESTART_POLICY}"
+
+    labels:
+      ru.prosoft.company: "Prosoft Ltd."
+      ru.prosoft.component: "Python Agent"
