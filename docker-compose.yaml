@@ -32,5 +32,5 @@ services:
     restart: "${RESTART_POLICY}"
 
     labels:
-      ru.prosoft.company: "Prosoft Ltd."
-      ru.prosoft.component: "Python Agent"
+      ru.alexlanu.company: "Alexlanu"
+      ru.alexlanu.component: "Python Agent"
