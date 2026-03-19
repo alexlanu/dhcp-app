@@ -9,8 +9,7 @@ conf.load_layers.remove('sctp')
 conf.verb = 0
 conf.checkIPaddr = False
 
-#from scapy.all import get_if_raw_hwaddr, Ether, IP, UDP, BOOTP, DHCP, srp1, sendp
-from scapy.all import *
+from scapy.all import get_if_raw_hwaddr, Ether, IP, UDP, BOOTP, DHCP, srp1, sendp
 
 def getval(lst,fld):
     for p in lst:
@@ -71,7 +70,7 @@ class DHCPError(Exception):
         self.message = message
 
 class DHCPTester(object):
-    def __init__(self, interface, mac=None, ip=None, servers_ids=None, timeout=2):
+    def __init__(self, interface, servers_ids, mac=None, ip=None, timeout=2):
         try:
             fam, self.mac = get_if_raw_hwaddr(interface)
         except IOError:
@@ -86,8 +85,13 @@ class DHCPTester(object):
 
         self.ip = ip
 
-        self.servers_ids = ['192.168.1.50','192.168.1.32']
-        #print (servers_ids)
+        if not servers_ids:
+            raise DHCPError(9, 'Servers list is empty')
+
+        if isinstance(servers_ids, str):
+            servers_ids = [servers_ids]
+
+        self.servers_ids = servers_ids
 
         if timeout:
             self.timeout = timeout
@@ -95,6 +99,7 @@ class DHCPTester(object):
             self.timeout = 2
 
         self.state = 0
+        self.server_ip = None  # IP адрес ответившего DHCP сервера
 
     def discovery(self):
         pktdiscovery = Ether(src=self.mac, dst='ff:ff:ff:ff:ff:ff')/\
@@ -117,7 +122,7 @@ class DHCPTester(object):
         self.server_mac = pktoffer[Ether].src
         self.server_id = getval(pktoffer[DHCP].options, 'server_id')
         self.requested_addr = pktoffer[BOOTP].yiaddr
-        
+
         if self.servers_ids and self.server_id not in self.servers_ids:
             print (self.server_id)
             raise DHCPError(5, 'Offer from unwanted DHCP-server')
@@ -147,6 +152,10 @@ class DHCPTester(object):
         if getval(pktack[DHCP].options, 'message-type') != 5:
             raise DHCPError(8, 'Invalid ack received')
 
+        # Обновляем server_ip, если ACK пришел с другого IP (хотя обычно с того же)
+        if pktack[IP].src != self.server_ip:
+            self.server_ip = pktack[IP].src
+
         self.state = 2
 
     def release(self):
@@ -166,25 +175,66 @@ class DHCPTester(object):
 
         self.state = 1
 
+    def get_server_ip(self):
+        """Возвращает IP адрес ответившего DHCP сервера"""
+        return self.server_ip
+
 if __name__ == '__main__':
-    if len(sys.argv) > 1 or len(sys.argv) <= 6:
-        args = sys.argv[1:]
+    unix_time = int(time.time())
 
-        if len(args) > 3:
-            args[3] = args[3].split(':')
+    # Проверка минимального количества аргументов (нужен хотя бы интерфейс и список серверов)
+    if len(sys.argv) < 3:
+        print('{"dhcp": {"result": 100, "time": ' + str(unix_time) + '}}')
+        print('Usage: %s <interface> <servers_ids> [<mac> [<ip> [<timeout>]]]' % sys.argv[0], file=sys.stderr)
+        print('  servers_ids - comma-separated list of DHCP server IPs (e.g., "192.168.1.32,192.168.1.50")', file=sys.stderr)
+        sys.exit(100)
 
-        unix_time = int(time.time())
+    args = sys.argv[1:]
 
+    # Разбор аргументов
+    interface = args[0]
+
+    # Разделяем список серверов по запятой
+    servers_ids = args[1].split(',')
+
+    # Опциональные параметры
+    mac = None
+    ip = None
+    timeout = None
+
+    if len(args) > 2:
+        mac = args[2]
+    if len(args) > 3:
+        ip = args[3]
+    if len(args) > 4:
         try:
-            dhcp = DHCPTester(*args)
-            dhcp.discovery()
-            dhcp.request()
-            dhcp.release()
-        except DHCPError as e:
+            timeout = int(args[4])
+        except ValueError:
+            timeout = 2
+
+    server_ip = None
+
+    try:
+        dhcp = DHCPTester(interface, servers_ids, mac, ip, timeout)
+        dhcp.discovery()
+        dhcp.request()
+        server_ip = dhcp.get_server_ip()
+        dhcp.release()
+    except DHCPError as e:
+        # В случае ошибки также пытаемся получить server_ip, если он уже был определен
+        if dhcp and hasattr(dhcp, 'get_server_ip'):
+            server_ip = dhcp.get_server_ip()
+
+        # Формируем JSON с ошибкой, включая server_ip если он есть
+        if server_ip:
+            dhcp_data = '{"dhcp": {"result": ' + str(e.code) + ', "time": ' + str(unix_time) + ', "server_ip": "' + server_ip + '"}}'
+        else:
             dhcp_data = '{"dhcp": {"result": ' + str(e.code) + ', "time": ' + str(unix_time) + '}}'
-            print (dhcp_data)
-            sys.exit (e.code)
-        print ('{"dhcp": {"result": 0, "time": ' + str(unix_time) + '}}')
+        print (dhcp_data)
+        sys.exit (e.code)
+
+    # Формируем JSON с успешным результатом, включая server_ip
+    if server_ip:
+        print ('{"dhcp": {"result": 0, "time": ' + str(unix_time) + ', "server_ip": "' + server_ip + '"}}')
     else:
-#        print ('Usage: %s <interface> [<mac> [<ip> [<severs_ids> [<timeout>]]]')
-        print ('{"dhcp": {"result": 100, "time": ' + str(unix_time) + '}}')
+        print ('{"dhcp": {"result": 0, "time": ' + str(unix_time) + '}}')
